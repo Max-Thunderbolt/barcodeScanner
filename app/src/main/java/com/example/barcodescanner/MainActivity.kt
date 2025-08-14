@@ -5,7 +5,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.widget.TextView
+import android.widget.Button
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,11 +33,16 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.io.File
+import org.json.JSONArray
 
 class MainActivity : ComponentActivity() {
 
 	private lateinit var previewView: PreviewView
 	private lateinit var barcodeText: TextView
+	private lateinit var refreshButton: Button
+	private lateinit var viewFilesButton: Button
+	private lateinit var exportFilesButton: Button
 	private lateinit var cameraExecutor: ExecutorService
 
 	private val client by lazy { OkHttpClient() }
@@ -66,7 +74,25 @@ class MainActivity : ComponentActivity() {
 
 		previewView = findViewById(R.id.preview_view)
 		barcodeText = findViewById(R.id.barcode_text)
+		refreshButton = findViewById(R.id.refresh_button)
+		viewFilesButton = findViewById(R.id.view_files_button)
+		exportFilesButton = findViewById(R.id.export_files_button)
 		cameraExecutor = Executors.newSingleThreadExecutor()
+
+		// Set up refresh button click listener
+		refreshButton.setOnClickListener {
+			resetScanning()
+		}
+
+		// Set up view files button click listener
+		viewFilesButton.setOnClickListener {
+			showFileContents()
+		}
+
+		// Set up export files button click listener
+		exportFilesButton.setOnClickListener {
+			exportFilesToDesktop()
+		}
 
 		if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
 			== PackageManager.PERMISSION_GRANTED
@@ -74,6 +100,109 @@ class MainActivity : ComponentActivity() {
 			startCamera()
 		} else {
 			requestPermission.launch(Manifest.permission.CAMERA)
+		}
+	}
+
+	private fun saveApiResponse(barcode: String, apiResponse: String) {
+		val filePath = File(filesDir, "api_responses.json")
+		if (!filePath.exists()) {
+			filePath.createNewFile()
+		}
+		
+		// Create a JSON object with timestamp and the full API response
+		val responseData = JSONObject().apply {
+			put("barcode", barcode)
+			put("timestamp", System.currentTimeMillis())
+			put("api_response", JSONObject(apiResponse))
+		}
+		
+		// Read existing content and append new response
+		val fileContent = if (filePath.exists()) filePath.readText() else ""
+		val jsonArray = if (fileContent.isNotEmpty()) {
+			try {
+				JSONObject(fileContent).getJSONArray("responses")
+			} catch (e: Exception) {
+				JSONObject().put("responses", JSONArray()).getJSONArray("responses")
+			}
+		} else {
+			JSONObject().put("responses", JSONArray()).getJSONArray("responses")
+		}
+		
+		jsonArray.put(responseData)
+		val finalContent = JSONObject().put("responses", jsonArray).toString(2)
+		filePath.writeText(finalContent)
+	}
+
+	private fun saveProduct(barcode: String, name: String, brand: String, quantity: String) {
+		val filePath = File(filesDir, "products.json")
+		if (!filePath.exists()) {
+			filePath.createNewFile()
+		}
+		val product = JSONObject().apply {
+			put("barcode", barcode)
+			put("name", name)
+			put("brand", brand)
+			put("quantity", quantity)
+		}
+		val fileContent = filePath.readText()
+		val newContent = fileContent + product.toString()
+		filePath.writeText(newContent)
+	}
+
+	// Reset scanning state to allow scanning new items
+	private fun resetScanning() {
+		hasHandledScan = false
+		barcodeText.text = "Ready to scan..."
+	}
+
+	// Show the contents of saved files
+	private fun showFileContents() {
+		val apiResponseFile = File(filesDir, "api_responses.json")
+		val productsFile = File(filesDir, "products.json")
+		
+		val apiContent = if (apiResponseFile.exists()) apiResponseFile.readText() else "No API responses saved yet"
+		val productsContent = if (productsFile.exists()) productsFile.readText() else "No products saved yet"
+		
+		val combinedContent = """
+			=== API RESPONSES ===
+			$apiContent
+			
+			=== PRODUCTS ===
+			$productsContent
+		""".trimIndent()
+		
+		barcodeText.text = combinedContent
+	}
+
+	// Export files to external storage (accessible from desktop)
+	private fun exportFilesToDesktop() {
+		try {
+			val apiResponseFile = File(filesDir, "api_responses.json")
+			val productsFile = File(filesDir, "products.json")
+			
+			// Get the Downloads directory
+			val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+			if (!downloadsDir.exists()) {
+				downloadsDir.mkdirs()
+			}
+			
+			// Copy files to Downloads folder
+			if (apiResponseFile.exists()) {
+				val destFile = File(downloadsDir, "barcode_scanner_api_responses.json")
+				apiResponseFile.copyTo(destFile, overwrite = true)
+			}
+			
+			if (productsFile.exists()) {
+				val destFile = File(downloadsDir, "barcode_scanner_products.json")
+				productsFile.copyTo(destFile, overwrite = true)
+			}
+			
+			Toast.makeText(this, "Files exported to Downloads folder", Toast.LENGTH_LONG).show()
+			barcodeText.text = "Files exported to:\n${downloadsDir.absolutePath}\n\nCheck your Downloads folder!"
+			
+		} catch (e: Exception) {
+			Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
+			barcodeText.text = "Export failed: ${e.message}"
 		}
 	}
 
@@ -157,10 +286,19 @@ class MainActivity : ComponentActivity() {
 				try {
 					client.newCall(request).execute().use { response ->
 						if (!response.isSuccessful) {
+							val errorResponse = "{\"error\": \"HTTP ${response.code}\", \"barcode\": \"$barcode\"}"
+							saveApiResponse(barcode, errorResponse)
 							return@withContext "Error ${response.code}"
 						}
 						val body = response.body?.string().orEmpty()
-						if (body.isEmpty()) return@withContext "Empty response"
+						if (body.isEmpty()) {
+							val emptyResponse = "{\"error\": \"Empty response\", \"barcode\": \"$barcode\"}"
+							saveApiResponse(barcode, emptyResponse)
+							return@withContext "Empty response"
+						}
+
+						// Save the complete API response
+						saveApiResponse(barcode, body)
 
 						val root = JSONObject(body)
 						val status = root.optString("status", "")
@@ -176,7 +314,9 @@ class MainActivity : ComponentActivity() {
 							"Not found on Open Food Facts"
 						}
 					}
-				} catch (_: Exception) {
+				} catch (e: Exception) {
+					val errorResponse = "{\"error\": \"Network error: ${e.message}\", \"barcode\": \"$barcode\"}"
+					saveApiResponse(barcode, errorResponse)
 					"Network error"
 				}
 			}
