@@ -77,20 +77,24 @@ class MainActivity : ComponentActivity() {
 		}
 	}
 
+	// Start the camera and set up the preview and analysis
 	@OptIn(ExperimentalGetImage::class)
 	private fun startCamera() {
 		val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
 		cameraProviderFuture.addListener({
 			val cameraProvider = cameraProviderFuture.get()
 
+			// Set up the preview
 			val preview = Preview.Builder().build().also {
 				it.setSurfaceProvider(previewView.surfaceProvider)
 			}
 
+			// Set up the analysis
 			val analysis = ImageAnalysis.Builder()
 				.setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
 				.build()
 
+			// Set up the analyzer
 			analysis.setAnalyzer(cameraExecutor) { imageProxy ->
 				val mediaImage = imageProxy.image
 				if (mediaImage == null) {
@@ -105,6 +109,7 @@ class MainActivity : ComponentActivity() {
 					return@setAnalyzer
 				}
 
+				// Scan the image for barcodes
 				scanner.process(image)
 					.addOnSuccessListener { barcodes ->
 						if (barcodes.isNotEmpty()) {
@@ -128,6 +133,7 @@ class MainActivity : ComponentActivity() {
 					}
 			}
 
+			// Bind the camera to the lifecycle
 			try {
 				cameraProvider.unbindAll()
 				cameraProvider.bindToLifecycle(
@@ -142,6 +148,7 @@ class MainActivity : ComponentActivity() {
 		}, ContextCompat.getMainExecutor(this))
 	}
 
+	// Fetch product information from Open Food Facts API
 	private fun fetchOpenFoodFacts(barcode: String) {
 		lifecycleScope.launch {
 			val result = withContext(Dispatchers.IO) {
